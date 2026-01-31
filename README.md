@@ -1,20 +1,26 @@
 # 🤖 GodBot v4.0 - Complete Discord Bot
 
-**A feature-rich Discord bot with 36 commands, AI integration, IBM toxicity moderation, crypto tracking, and entertainment features.**
+**A feature-rich Discord bot with 39 commands, Google Vertex AI, IBM toxicity moderation, NASA space data, crypto tracking, and entertainment features.**
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![Discord.py](https://img.shields.io/badge/discord.py-2.3+-purple.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Commands](https://img.shields.io/badge/commands-36-orange.svg)
+![Commands](https://img.shields.io/badge/commands-39-orange.svg)
 ![Version](https://img.shields.io/badge/version-4.0-brightgreen.svg)
+![NASA](https://img.shields.io/badge/NASA-API-red.svg)
 
 ## 🚀 Features
 
 ### 🤖 **AI & Chat (4 Commands)**
-- `/ai` - Chat with Google Gemini 2.0 Flash AI
+- `/ai` - Chat with Google Gemini 2.0 Flash via Vertex AI
 - `/imagine` - Generate AI images with Pollinations.ai
 - `/translate` - Translate text between languages
 - `/summarize` - Summarize long text documents
+
+### 🚀 **NASA & Space (3 NEW Commands)**
+- `/apod` - NASA Astronomy Picture of the Day
+- `/mars` - Latest Mars Rover photos from Curiosity
+- `/iss` - Real-time International Space Station tracking
 
 ### 🛡️ **Moderation (6 Commands)**
 - `/clear` - Bulk delete messages (1-100)
@@ -71,11 +77,8 @@
 ### Prerequisites
 - Python 3.8 or higher
 - Discord Bot Token
-- Google Gemini API Key (optional)
-- IBM WatsonX API Key (optional)
-- Other API keys as needed
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/artistxoder/miniature-octo-garbanzo.git
+git clone https://github.com/yourusername/godbot.git
 cd godbot
