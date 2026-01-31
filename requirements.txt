@@ -1,0 +1,28 @@
+# GodBot v4.0 - Requirements
+# Last updated: 2024-01-31
+
+# Core Discord Framework
+discord.py>=2.3.0,<3.0.0
+
+# Web & HTTP
+aiohttp>=3.9.0,<4.0.0
+
+# Environment Management
+python-dotenv>=1.0.0,<2.0.0
+
+# System Monitoring
+psutil>=5.9.0,<6.0.0
+
+# Google AI (UPDATED: Uses google-genai, NOT google-generativeai)
+google-genai>=0.3.0,<1.0.0
+
+# Optional: IBM WatsonX (if you want local validation)
+# ibm-watson-machine-learning>=1.0.0,<2.0.0
+
+# Optional: Enhanced logging
+# colorlog>=6.0.0,<7.0.0
+# rich>=13.0.0,<14.0.0
+
+# Optional: Async utilities
+# async-timeout>=4.0.0,<5.0.0
+# aiofiles>=23.0.0,<24.0.0
