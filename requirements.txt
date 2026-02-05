@@ -1,7 +1,17 @@
-# GodBot v4.0 - Requirements with Vertex AI & NASA
-discord.py>=2.3.0,<3.0.0
-aiohttp>=3.9.0,<4.0.0
-python-dotenv>=1.0.0,<2.0.0
-psutil>=5.9.0,<6.0.0
-# google-genai is replaced with direct Vertex API calls
-# No extra package needed for Google Vertex AI REST API
+# Discord API Wrapper
+discord.py>=2.3.2
+
+# HTTP Client for API requests (Weather, Crypto, NASA)
+aiohttp>=3.9.0
+
+# System Monitoring (for /stats command)
+psutil>=5.9.0
+
+# Google Gemini AI Integration
+google-generativeai
+
+# IBM Watson Integration (if using Watson features)
+ibm-watsonx-ai
+
+# Python Dotenv (Optional, for security)
+python-dotenv
