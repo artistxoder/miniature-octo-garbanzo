@@ -131,7 +131,7 @@ class BotConfig:
     """Centralized configuration management."""
     
     # ⚠️ REQUIRED: Set your Discord token
-    discord_token: str = "YOUR_DISCORD_BOT_TOKEN_HERE"
+    discord_token: str = "discord_token"
     bot_prefix: str = "/"
     
     # 🤖 AI Services
