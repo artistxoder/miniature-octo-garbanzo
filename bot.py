@@ -159,7 +159,7 @@ class BotConfig:
     log_level: str = "INFO"
 
     def is_configured(self) -> bool:
-        return self.discord_token and "TOKEN_HERE" not in self.discord_token
+        return self.discord_token and self.discord_token != "discord_token"
 
 config = BotConfig()
 
@@ -348,7 +348,7 @@ class AIManager:
         # Gemini Init
         if GEMINI_AVAILABLE and self.config.gemini_api_key:
             try:
-                self.gemini = google_genai.GenerativeModel('gemini-3-flash', api_key=self.config.gemini_api_key)
+                self.gemini = google_genai.GenerativeModel('gemini-1.5-flash', api_key=self.config.gemini_api_key)
                 logger.info("✅ Gemini AI initialized")
             except Exception as e:
                 logger.error(f"❌ Gemini init failed: {e}")
@@ -371,7 +371,7 @@ class AIManager:
         """Cleanup AI manager resources."""
         self.cache.clear()
 
-    async def generate(self, prompt: str, model: AIModel = AIModel.AUTO) -> str:
+    async def generate(self, prompt: str, model: str = "auto") -> str:
         cache_key = f"{model}:{prompt}"
         if cache_key in self.cache:
             return self.cache[cache_key]
@@ -379,16 +379,16 @@ class AIManager:
         response = None
         try:
             # 1. Try Gemini
-            if (model == AIModel.GEMINI or model == AIModel.AUTO) and self.gemini:
+            if (model == "gemini" or model == "auto") and self.gemini:
                 resp = await asyncio.to_thread(self.gemini.generate_content, contents=prompt)
                 response = resp.text if resp else None
             
             # 2. Try Watson (if Gemini failed or requested)
-            if not response and (model == AIModel.WATSON or model == AIModel.AUTO) and self.watson:
+            if not response and (model == "watson" or model == "auto") and self.watson:
                 response = await asyncio.to_thread(self.watson.generate, prompt)
             
             # 3. Fallback: Reverse order
-            if not response and model == AIModel.GEMINI and self.watson:
+            if not response and model == "gemini" and self.watson:
                 response = await asyncio.to_thread(self.watson.generate, prompt)
             
         except Exception as e:
@@ -436,7 +436,8 @@ class GodBot(commands.Bot):
         self.bg_tasks.start()
 
     async def close(self):
-        await self.session.close()
+        if self.session:
+            await self.session.close()
         await super().close()
 
     @tasks.loop(minutes=10)
@@ -465,10 +466,15 @@ class GodBot(commands.Bot):
         
         # --- AI COMMANDS ---
         @self.tree.command(name="ai", description="Chat with Gemini/Watson")
-        async def ai_cmd(interaction: Interaction, prompt: str, model: AIModel = AIModel.AUTO):
+        @app_commands.choices(model=[
+            app_commands.Choice(name="Gemini", value="gemini"),
+            app_commands.Choice(name="Watson", value="watson"),
+            app_commands.Choice(name="Auto", value="auto")
+        ])
+        async def ai_cmd(interaction: Interaction, prompt: str, model: str = "auto"):
             await interaction.response.defer()
             resp = await self.ai.generate(prompt, model)
-            color = Colors.WATSON if model == AIModel.WATSON else Colors.GEMINI
+            color = Colors.WATSON if model == "watson" else Colors.GEMINI
             embed = EmbedFactory.create("🤖 AI Response", resp[:4000], color)
             await interaction.followup.send(embed=embed)
 
@@ -491,9 +497,9 @@ class GodBot(commands.Bot):
             user = user or interaction.user
             fields = {
                 "🆔 ID": user.id,
-                "📅 Joined": user.joined_at.strftime("%Y-%m-%d"),
+                "📅 Joined": user.joined_at.strftime("%Y-%m-%d") if user.joined_at else "N/A",
                 "🎂 Created": user.created_at.strftime("%Y-%m-%d"),
-                "🎭 Roles": len(user.roles) - 1
+                "🎭 Roles": len(user.roles) - 1 if isinstance(user, discord.Member) else 0
             }
             embed = EmbedFactory.create(f"👤 {user.name}", thumbnail=user.display_avatar.url, fields=fields)
             await interaction.response.send_message(embed=embed)
@@ -502,7 +508,7 @@ class GodBot(commands.Bot):
         async def server_cmd(interaction: Interaction):
             g = interaction.guild
             fields = {
-                "👑 Owner": g.owner.mention,
+                "👑 Owner": g.owner.mention if g.owner else "N/A",
                 "👥 Members": g.member_count,
                 "💬 Channels": len(g.channels),
                 "🚀 Boosts": g.premium_subscription_count
@@ -513,13 +519,15 @@ class GodBot(commands.Bot):
         @self.tree.command(name="poll", description="Create a poll")
         async def poll_cmd(interaction: Interaction, question: str, option1: str, option2: str, option3: Optional[str] = None):
             opts = [option1, option2]
-            if option3: opts.append(option3)
+            if option3: 
+                opts.append(option3)
             desc = "\n".join([f"{i+1}️⃣ {opt}" for i, opt in enumerate(opts)])
             embed = EmbedFactory.create(f"📊 {question}", desc, Colors.INFO)
             await interaction.response.send_message(embed=embed)
             msg = await interaction.original_response()
             emojis = ["1️⃣", "2️⃣", "3️⃣"]
-            for i in range(len(opts)): await msg.add_reaction(emojis[i])
+            for i in range(len(opts)): 
+                await msg.add_reaction(emojis[i])
 
         @self.tree.command(name="qrcode", description="Generate a QR Code")
         async def qr_cmd(interaction: Interaction, data: str):
@@ -532,46 +540,66 @@ class GodBot(commands.Bot):
         async def weather_cmd(interaction: Interaction, city: str):
             if not self.config.openweather_api_key:
                 return await interaction.response.send_message("❌ API key missing", ephemeral=True)
+            await interaction.response.defer()
             url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={self.config.openweather_api_key}&units=metric"
-            async with self.session.get(url) as resp:
-                if resp.status != 200: return await interaction.response.send_message("❌ City not found")
-                data = await resp.json()
-                fields = {
-                    "🌡️ Temp": f"{data['main']['temp']}°C",
-                    "💧 Humidity": f"{data['main']['humidity']}%",
-                    "☁️ Sky": data['weather'][0]['description'].title()
-                }
-                await interaction.response.send_message(embed=EmbedFactory.create(f"Weather in {data['name']}", fields=fields, color=Colors.INFO))
+            try:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    if resp.status != 200: 
+                        return await interaction.followup.send("❌ City not found")
+                    data = await resp.json()
+                    fields = {
+                        "🌡️ Temp": f"{data['main']['temp']}°C",
+                        "💧 Humidity": f"{data['main']['humidity']}%",
+                        "☁️ Sky": data['weather'][0]['description'].title()
+                    }
+                    await interaction.followup.send(embed=EmbedFactory.create(f"Weather in {data['name']}", fields=fields, color=Colors.INFO))
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
 
         @self.tree.command(name="crypto", description="Get crypto price")
         async def crypto_cmd(interaction: Interaction, coin: str = "bitcoin"):
+            await interaction.response.defer()
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd&include_24hr_change=true"
-            async with self.session.get(url) as resp:
-                data = await resp.json()
-                if coin not in data: return await interaction.response.send_message("❌ Coin not found")
-                price = data[coin]['usd']
-                change = data[coin].get('usd_24h_change', 0)
-                color = Colors.SUCCESS if change >= 0 else Colors.ERROR
-                embed = EmbedFactory.create(f"💰 {coin.title()}", f"Price: ${price:,.2f}\n24h Change: {change:.2f}%", color)
-                await interaction.response.send_message(embed=embed)
+            try:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    data = await resp.json()
+                    if coin not in data: 
+                        return await interaction.followup.send("❌ Coin not found")
+                    price = data[coin]['usd']
+                    change = data[coin].get('usd_24h_change', 0)
+                    color = Colors.SUCCESS if change >= 0 else Colors.ERROR
+                    embed = EmbedFactory.create(f"💰 {coin.title()}", f"Price: ${price:,.2f}\n24h Change: {change:.2f}%", color)
+                    await interaction.followup.send(embed=embed)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
 
         @self.tree.command(name="github", description="Get repo info")
         async def github_cmd(interaction: Interaction, owner: str, repo: str):
+            await interaction.response.defer()
             url = f"https://api.github.com/repos/{owner}/{repo}"
-            async with self.session.get(url) as resp:
-                if resp.status != 200: return await interaction.response.send_message("❌ Repo not found")
-                d = await resp.json()
-                fields = {"⭐ Stars": d['stargazers_count'], "🍴 Forks": d['forks_count'], "🐛 Issues": d['open_issues_count']}
-                await interaction.response.send_message(embed=EmbedFactory.create(f"GitHub: {d['full_name']}", d['description'], Colors.GITHUB, fields))
+            try:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    if resp.status != 200: 
+                        return await interaction.followup.send("❌ Repo not found")
+                    d = await resp.json()
+                    fields = {"⭐ Stars": d['stargazers_count'], "🍴 Forks": d['forks_count'], "🐛 Issues": d['open_issues_count']}
+                    await interaction.followup.send(embed=EmbedFactory.create(f"GitHub: {d['full_name']}", d['description'], Colors.GITHUB, fields))
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
 
         @self.tree.command(name="nasa", description="NASA Picture of the Day")
         async def nasa_cmd(interaction: Interaction):
+            await interaction.response.defer()
             url = f"https://api.nasa.gov/planetary/apod?api_key={self.config.nasa_api_key}"
-            async with self.session.get(url) as resp:
-                if resp.status != 200: return await interaction.response.send_message("❌ NASA API Error")
-                d = await resp.json()
-                embed = EmbedFactory.create(f"🌌 {d.get('title')}", d.get('explanation')[:1000] + "...", Colors.NASA, image=d.get('url'))
-                await interaction.response.send_message(embed=embed)
+            try:
+                async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    if resp.status != 200: 
+                        return await interaction.followup.send("❌ NASA API Error")
+                    d = await resp.json()
+                    embed = EmbedFactory.create(f"🌌 {d.get('title')}", d.get('explanation', '')[:1000] + "...", Colors.NASA, image=d.get('url'))
+                    await interaction.followup.send(embed=embed)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
 
         # --- FUN COMMANDS ---
         @self.tree.command(name="8ball", description="Ask the Magic 8-Ball")
@@ -582,25 +610,31 @@ class GodBot(commands.Bot):
 
         @self.tree.command(name="trivia", description="Get a trivia question")
         async def trivia_cmd(interaction: Interaction):
-            async with self.session.get("https://opentdb.com/api.php?amount=1&type=boolean") as resp:
-                d = await resp.json()
-                q = d['results'][0]
-                question = html.unescape(q['question'])
-                ans = q['correct_answer']
-                
-                view = View()
-                async def cb(intr: Interaction):
-                    if intr.user.id != interaction.user.id: return
-                    btn_lbl = intr.data['custom_id'] # type: ignore
-                    msg = "✅ Correct!" if btn_lbl == ans else f"❌ Wrong! It was {ans}."
-                    await intr.response.send_message(msg, ephemeral=True)
+            await interaction.response.defer()
+            try:
+                async with self.session.get("https://opentdb.com/api.php?amount=1&type=boolean", timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    d = await resp.json()
+                    q = d['results'][0]
+                    question = html.unescape(q['question'])
+                    ans = q['correct_answer']
                     
-                b1 = Button(label="True", style=ButtonStyle.success, custom_id="True")
-                b2 = Button(label="False", style=ButtonStyle.danger, custom_id="False")
-                b1.callback = b2.callback = cb
-                view.add_item(b1).add_item(b2)
-                
-                await interaction.response.send_message(embed=EmbedFactory.create("❓ Trivia", question, Colors.TRIVIA), view=view)
+                    view = View()
+                    
+                    async def cb(intr: Interaction):
+                        if intr.user.id != interaction.user.id: 
+                            return
+                        btn_lbl = intr.data['custom_id']
+                        msg = "✅ Correct!" if btn_lbl == ans else f"❌ Wrong! It was {ans}."
+                        await intr.response.send_message(msg, ephemeral=True)
+                        
+                    b1 = Button(label="True", style=ButtonStyle.success, custom_id="True")
+                    b2 = Button(label="False", style=ButtonStyle.danger, custom_id="False")
+                    b1.callback = b2.callback = cb
+                    view.add_item(b1).add_item(b2)
+                    
+                    await interaction.followup.send(embed=EmbedFactory.create("❓ Trivia", question, Colors.TRIVIA), view=view)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error: {e}")
 
         # --- ADMIN ---
         @self.tree.command(name="stats", description="Bot Statistics")
