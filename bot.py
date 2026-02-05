@@ -51,6 +51,10 @@ import re
 import time
 import math
 from datetime import timezone, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from typing import Optional, Dict, List, Tuple, Union, Set, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -129,21 +133,21 @@ class Limits:
 class BotConfig:
     """Centralized configuration management."""
     
-    # ⚠️ REQUIRED: Set your Discord token
-    discord_token: str = "discord_token"
+    # ⚠️ Read from .env file
+    discord_token: str = field(default_factory=lambda: os.getenv('DISCORD_TOKEN', 'discord_token'))
     bot_prefix: str = "/"
     
     # 🤖 AI Services
-    gemini_api_key: str = ""  # https://aistudio.google.com/
-    watson_api_key: str = ""
-    watson_service_url: str = "https://us-south.ml.cloud.ibm.com"
-    watson_project_id: str = ""
-    watson_model: str = "ibm/granite-3-8b-instruct"
+    gemini_api_key: str = field(default_factory=lambda: os.getenv('GEMINI_API_KEY', ''))
+    watson_api_key: str = field(default_factory=lambda: os.getenv('WATSON_API_KEY', ''))
+    watson_service_url: str = field(default_factory=lambda: os.getenv('WATSON_SERVICE_URL', 'https://us-south.ml.cloud.ibm.com'))
+    watson_project_id: str = field(default_factory=lambda: os.getenv('WATSON_PROJECT_ID', ''))
+    watson_model: str = field(default_factory=lambda: os.getenv('WATSON_MODEL', 'ibm/granite-3-8b-instruct'))
     
     # 📊 API Keys (Optional but recommended)
-    finnhub_api_key: str = ""      # Stocks
-    openweather_api_key: str = ""  # Weather
-    nasa_api_key: str = "DEMO_KEY" # NASA (DEMO_KEY works but rate limited)
+    finnhub_api_key: str = field(default_factory=lambda: os.getenv('FINNHUB_API_KEY', ''))
+    openweather_api_key: str = field(default_factory=lambda: os.getenv('OPENWEATHER_API_KEY', ''))
+    nasa_api_key: str = field(default_factory=lambda: os.getenv('NASA_API_KEY', 'DEMO_KEY'))
     
     # 🛡️ Moderation
     moderation_enabled: bool = True
@@ -156,7 +160,7 @@ class BotConfig:
     # ⚙️ Advanced
     max_ai_response_tokens: int = 1000
     ai_temperature: float = 0.7
-    log_level: str = "INFO"
+    log_level: str = field(default_factory=lambda: os.getenv('LOG_LEVEL', 'INFO'))
 
     def is_configured(self) -> bool:
         return self.discord_token and self.discord_token != "discord_token"
@@ -668,7 +672,8 @@ async def main():
     
     if not config.is_configured():
         print("❌ ERROR: Discord Token not configured!")
-        print(f"   Please edit the 'discord_token' field in line 113.")
+        print(f"   Please set DISCORD_TOKEN in your .env file or environment variables.")
+        print(f"   Example: DISCORD_TOKEN=your_token_here")
         return
 
     bot = GodBot()
