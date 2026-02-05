@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🤖 GodBot v10.0 - Ultimate Edition
+🤖 GodBot v10.1 - Ultimate Edition
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 The All-in-One Enterprise AI Discord Bot
 
@@ -29,8 +29,7 @@ FEATURES:
    • Real-time Performance Monitoring
    • Auto-Self-Healing & Cleanup
    • Rich Color-Coded Embeds
-
-Author: GodBot Team
+Auther: ArtistXoder
 License: MIT
 Python: 3.8+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -343,12 +342,9 @@ class AIManager:
         self.gemini = None
         self.watson = None
         self.cache = {}
-    
-  async def close(self):
-        # Only try to close the session if it was actually created
-        if hasattr(self, 'session') and self.session is not None:
-            await self.session.close()
-        await super().close()
+
+    async def initialize(self):
+        """Initialize external AI services (Gemini, Watson) if available."""
         # Gemini Init
         if GEMINI_AVAILABLE and self.config.gemini_api_key:
             try:
@@ -370,6 +366,10 @@ class AIManager:
                 logger.info("✅ Watson AI initialized")
             except Exception as e:
                 logger.error(f"❌ Watson init failed: {e}")
+
+    async def close(self):
+        """Cleanup AI manager resources."""
+        self.cache.clear()
 
     async def generate(self, prompt: str, model: AIModel = AIModel.AUTO) -> str:
         cache_key = f"{model}:{prompt}"
@@ -468,7 +468,8 @@ class GodBot(commands.Bot):
         async def ai_cmd(interaction: Interaction, prompt: str, model: AIModel = AIModel.AUTO):
             await interaction.response.defer()
             resp = await self.ai.generate(prompt, model)
-            embed = EmbedFactory.create("🤖 AI Response", resp[:4000], Colors.GEMINI if model != "watson" else Colors.WATSON)
+            color = Colors.WATSON if model == AIModel.WATSON else Colors.GEMINI
+            embed = EmbedFactory.create("🤖 AI Response", resp[:4000], color)
             await interaction.followup.send(embed=embed)
 
         @self.tree.command(name="image", description="Generate an image (via Pollinations)")
@@ -594,8 +595,8 @@ class GodBot(commands.Bot):
                     msg = "✅ Correct!" if btn_lbl == ans else f"❌ Wrong! It was {ans}."
                     await intr.response.send_message(msg, ephemeral=True)
                     
-                b1 = Button(label="True", style=ButtonStyle.green, custom_id="True")
-                b2 = Button(label="False", style=ButtonStyle.red, custom_id="False")
+                b1 = Button(label="True", style=ButtonStyle.success, custom_id="True")
+                b2 = Button(label="False", style=ButtonStyle.danger, custom_id="False")
                 b1.callback = b2.callback = cb
                 view.add_item(b1).add_item(b2)
                 
