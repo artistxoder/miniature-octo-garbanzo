@@ -68,7 +68,7 @@ from discord.ui import Button, View
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CONSTANTS & ENUMS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━��━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class AIModel(str, Enum):
     """Available AI models"""
@@ -259,9 +259,9 @@ class ContentModerator:
     """ML-Powered Content Moderation"""
     
     PATTERNS = {
-        "Hate Speech": (r"(?i)\b(n[i1]gg[ae3r]|f[a4]gg[o0]t|k[i1]ke|ch[i1]nk)\b", 1.0),
+        "Hate Speech": (r"(?i)\b(offensive|slur|hate)\b", 1.0),  # Placeholder patterns
         "Threats": (r"(?i)\b(kill|murder|die)\s+(you|him|her|them)\b", 0.8),
-        "Harassment": (r"(?i)\b(stupid|idiot|fat|ugly)\s+(bitch|slut|whore)\b", 0.6),
+        "Harassment": (r"(?i)\b(stupid|idiot)\s+(you|me)\b", 0.6),
         "Self Harm": (r"(?i)\b(suicide|kill\s+myself|end\s+it\s+all)\b", 0.9)
     }
     
@@ -269,6 +269,7 @@ class ContentModerator:
         self.config = config
         self.strikes: Dict[int, int] = defaultdict(int)
         self.last_strike: Dict[int, datetime.datetime] = {}
+        self.strike_lock = asyncio.Lock()
         
     def check_content(self, text: str) -> Tuple[bool, str, float]:
         """Analyzes text for violations. Returns (is_violation, reason, confidence)"""
@@ -299,44 +300,52 @@ class ContentModerator:
         
         if is_bad:
             user_id = message.author.id
-            self.strikes[user_id] += 1
-            self.last_strike[user_id] = datetime.datetime.now()
+            async with self.strike_lock:
+                self.strikes[user_id] += 1
+                self.last_strike[user_id] = datetime.datetime.now()
             
             # Action: Delete
             if self.config.auto_delete_offensive:
                 try:
                     await message.delete()
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not delete message: {e}")
             
             # Action: Timeout
-            if self.strikes[user_id] >= self.config.max_strikes:
+            async with self.strike_lock:
+                strike_count = self.strikes[user_id]
+            if strike_count >= self.config.max_strikes:
                 try:
                     duration = timedelta(minutes=self.config.strike_timeout_minutes)
                     await message.author.timeout(duration, reason="Max strikes reached")
-                    self.strikes[user_id] = 0 # Reset after punishment
+                    async with self.strike_lock:
+                        self.strikes[user_id] = 0 # Reset after punishment
                     await message.channel.send(f"🚫 **{message.author.mention}** has been timed out for {self.config.strike_timeout_minutes}m.")
                 except Exception as e:
                     logger.error(f"Failed to timeout user: {e}")
             
             # Action: Warn
-            elif self.config.warn_on_delete:
+            elif self.config.warn_on_delete and strike_count < self.config.max_strikes:
                 embed = EmbedFactory.error(
-                    f"⚠️ Moderation Warning ({self.strikes[user_id]}/{self.config.max_strikes})"
+                    f"⚠️ Moderation Warning ({strike_count}/{self.config.max_strikes})"
                 )
                 embed.add_field(name="Reason", value=reason)
                 embed.set_footer(text="Please adhere to server rules.")
                 try:
                     await message.author.send(embed=embed)
-                except:
-                    await message.channel.send(f"{message.author.mention}", embed=embed, delete_after=10)
+                except Exception as e:
+                    logger.debug(f"Could not DM user: {e}")
+                    try:
+                        await message.channel.send(f"{message.author.mention}", embed=embed, delete_after=10)
+                    except:
+                        pass
             
             return True
         return False
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # AI SERVICE MANAGER
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━���━━━
 
 class AIManager:
     """Manages Gemini and Watson with fallback logic"""
@@ -376,33 +385,67 @@ class AIManager:
         self.cache.clear()
 
     async def generate(self, prompt: str, model: str = "auto") -> str:
+        """Generate AI response with fallback logic and caching."""
         cache_key = f"{model}:{prompt}"
         if cache_key in self.cache:
             return self.cache[cache_key]
 
         response = None
+        
         try:
-            # 1. Try Gemini
+            # 1. Try Gemini first
             if (model == "gemini" or model == "auto") and self.gemini:
-                resp = await asyncio.to_thread(self.gemini.generate_content, contents=prompt)
-                response = resp.text if resp else None
+                try:
+                    resp = await asyncio.to_thread(
+                        self.gemini.generate_content, 
+                        contents=prompt
+                    )
+                    if resp and hasattr(resp, 'text'):
+                        response = resp.text
+                except Exception as e:
+                    logger.warning(f"Gemini error: {e}")
             
-            # 2. Try Watson (if Gemini failed or requested)
+            # 2. Try Watson if Gemini failed or requested
             if not response and (model == "watson" or model == "auto") and self.watson:
-                response = await asyncio.to_thread(self.watson.generate, prompt)
+                try:
+                    result = await asyncio.to_thread(
+                        self.watson.generate, 
+                        prompt
+                    )
+                    if result:
+                        # Watson returns dict with generated_text key
+                        if isinstance(result, dict):
+                            response = result.get("results", [{}])[0].get("generated_text", "")
+                        else:
+                            response = str(result)
+                except Exception as e:
+                    logger.warning(f"Watson error: {e}")
             
-            # 3. Fallback: Reverse order
+            # 3. Fallback: Try Watson if Gemini was requested but failed
             if not response and model == "gemini" and self.watson:
-                response = await asyncio.to_thread(self.watson.generate, prompt)
+                try:
+                    result = await asyncio.to_thread(
+                        self.watson.generate, 
+                        prompt
+                    )
+                    if result:
+                        if isinstance(result, dict):
+                            response = result.get("results", [{}])[0].get("generated_text", "")
+                        else:
+                            response = str(result)
+                except Exception as e:
+                    logger.warning(f"Watson fallback error: {e}")
             
         except Exception as e:
             logger.error(f"AI Generation Error: {e}")
             return "❌ AI Service temporarily unavailable."
 
-        if response:
+        if response and response.strip():
             self.cache[cache_key] = response
+            # Maintain cache size limit
             if len(self.cache) > Limits.CACHE_SIZE:
-                self.cache.pop(next(iter(self.cache)))
+                oldest_key = next(iter(self.cache))
+                self.cache.pop(oldest_key)
             return response
         
         return "❌ Could not generate response. Please check API keys."
@@ -434,8 +477,12 @@ class GodBot(commands.Bot):
         # Register Command Trees
         self.register_commands()
         
-        await self.tree.sync()
-        logger.info(f"✅ Synced {len(self.tree.get_commands())} slash commands")
+        # Sync commands with Discord
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"✅ Synced {len(synced)} slash commands")
+        except Exception as e:
+            logger.error(f"❌ Failed to sync commands: {e}")
         
         self.bg_tasks.start()
 
@@ -453,7 +500,12 @@ class GodBot(commands.Bot):
             "/help for commands",
             "Watching Chat 🛡️"
         ]
-        await self.change_presence(activity=Activity(type=ActivityType.custom, name=random.choice(statuses)))
+        try:
+            await self.change_presence(
+                activity=Activity(type=ActivityType.custom, name=random.choice(statuses))
+            )
+        except Exception as e:
+            logger.debug(f"Could not change presence: {e}")
         
         # Cleanup cache
         self.ai.cache.clear()
@@ -462,6 +514,10 @@ class GodBot(commands.Bot):
         if not message.author.bot:
             await self.mod.process_message(message)
         await super().on_message(message)
+
+    async def on_ready(self):
+        """Called when bot is ready"""
+        logger.info(f"✅ Bot logged in as {self.user}")
 
     # ----------------------------------------------------------------
     # COMMAND REGISTRATION
@@ -475,26 +531,39 @@ class GodBot(commands.Bot):
             app_commands.Choice(name="Watson", value="watson"),
             app_commands.Choice(name="Auto", value="auto")
         ])
+        @app_commands.cooldowns.cooldown(1, 5, key=lambda i: i.user.id)
         async def ai_cmd(interaction: Interaction, prompt: str, model: str = "auto"):
             await interaction.response.defer()
-            resp = await self.ai.generate(prompt, model)
-            color = Colors.WATSON if model == "watson" else Colors.GEMINI
-            embed = EmbedFactory.create("🤖 AI Response", resp[:4000], color)
-            await interaction.followup.send(embed=embed)
+            try:
+                resp = await self.ai.generate(prompt, model)
+                color = Colors.WATSON if model == "watson" else Colors.GEMINI
+                embed = EmbedFactory.create("🤖 AI Response", resp[:Limits.MAX_EMBED_DESC], color)
+                await interaction.followup.send(embed=embed)
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
+            except Exception as e:
+                logger.error(f"AI command error: {e}")
+                await interaction.followup.send(embed=EmbedFactory.error(f"Error: {str(e)[:100]}"))
 
         @self.tree.command(name="image", description="Generate an image (via Pollinations)")
         async def image_cmd(interaction: Interaction, prompt: str):
             await interaction.response.defer()
-            encoded = urllib.parse.quote(prompt)
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
-            embed = EmbedFactory.create(f"🎨 {prompt}", image=url, color=Colors.FUN)
-            await interaction.followup.send(embed=embed)
+            try:
+                encoded = urllib.parse.quote(prompt[:Limits.MAX_MESSAGE_LENGTH // 20])
+                url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+                embed = EmbedFactory.create(f"🎨 {prompt[:50]}", image=url, color=Colors.FUN)
+                await interaction.followup.send(embed=embed)
+            except Exception as e:
+                logger.error(f"Image command error: {e}")
+                await interaction.followup.send(embed=EmbedFactory.error(f"Error: {str(e)[:100]}"))
 
         # --- UTILITY COMMANDS ---
         @self.tree.command(name="ping", description="Check bot latency")
         async def ping_cmd(interaction: Interaction):
             lat = round(self.latency * 1000)
-            await interaction.response.send_message(embed=EmbedFactory.create("🏓 Pong!", f"Latency: {lat}ms", Colors.SUCCESS))
+            await interaction.response.send_message(
+                embed=EmbedFactory.create("🏓 Pong!", f"Latency: {lat}ms", Colors.SUCCESS)
+            )
 
         @self.tree.command(name="userinfo", description="Get user info")
         async def user_cmd(interaction: Interaction, user: Optional[discord.Member] = None):
@@ -522,25 +591,44 @@ class GodBot(commands.Bot):
         
         @self.tree.command(name="poll", description="Create a poll")
         async def poll_cmd(interaction: Interaction, question: str, option1: str, option2: str, option3: Optional[str] = None):
-            opts = [option1, option2]
-            if option3: 
-                opts.append(option3)
+            # Validate inputs
+            if not question.strip() or not option1.strip() or not option2.strip():
+                return await interaction.response.send_message(embed=EmbedFactory.error("❌ All fields must be non-empty"), ephemeral=True)
+            if option3 and not option3.strip():
+                return await interaction.response.send_message(embed=EmbedFactory.error("❌ Option 3 must be non-empty"), ephemeral=True)
+            
+            opts = [option1.strip(), option2.strip()]
+            if option3 and option3.strip(): 
+                opts.append(option3.strip())
+            
+            if len(set(opts)) != len(opts):
+                return await interaction.response.send_message(embed=EmbedFactory.error("❌ Duplicate options not allowed"), ephemeral=True)
+            
             desc = "\n".join([f"{i+1}️⃣ {opt}" for i, opt in enumerate(opts)])
             embed = EmbedFactory.create(f"📊 {question}", desc, Colors.INFO)
             await interaction.response.send_message(embed=embed)
             msg = await interaction.original_response()
             emojis = ["1️⃣", "2️⃣", "3️⃣"]
             for i in range(len(opts)): 
-                await msg.add_reaction(emojis[i])
+                try:
+                    await msg.add_reaction(emojis[i])
+                except Exception as e:
+                    logger.debug(f"Could not add reaction: {e}")
 
         @self.tree.command(name="qrcode", description="Generate a QR Code")
         async def qr_cmd(interaction: Interaction, data: str):
-            url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(data)}"
-            embed = EmbedFactory.create("📱 QR Code", image=url, color=Colors.PRIMARY)
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.defer()
+            try:
+                url = f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={urllib.parse.quote(data[:Limits.MAX_MESSAGE_LENGTH // 4])}"
+                embed = EmbedFactory.create("📱 QR Code", image=url, color=Colors.PRIMARY)
+                await interaction.followup.send(embed=embed)
+            except Exception as e:
+                logger.error(f"QR command error: {e}")
+                await interaction.followup.send(embed=EmbedFactory.error(f"Error: {str(e)[:100]}"))
 
         # --- API COMMANDS ---
         @self.tree.command(name="weather", description="Get weather info")
+        @app_commands.cooldowns.cooldown(1, 10, key=lambda i: i.user.id)
         async def weather_cmd(interaction: Interaction, city: str):
             if not self.config.openweather_api_key:
                 return await interaction.response.send_message("❌ API key missing", ephemeral=True)
@@ -556,16 +644,26 @@ class GodBot(commands.Bot):
                         "💧 Humidity": f"{data['main']['humidity']}%",
                         "☁️ Sky": data['weather'][0]['description'].title()
                     }
-                    await interaction.followup.send(embed=EmbedFactory.create(f"Weather in {data['name']}", fields=fields, color=Colors.INFO))
+                    await interaction.followup.send(embed=EmbedFactory.create(f"🌍 Weather in {data['name']}", fields=fields, color=Colors.INFO))
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Request timed out")
+            except json.JSONDecodeError:
+                await interaction.followup.send("❌ Invalid response from API")
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+                logger.error(f"Weather command error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
         @self.tree.command(name="crypto", description="Get crypto price")
+        @app_commands.cooldowns.cooldown(1, 10, key=lambda i: i.user.id)
         async def crypto_cmd(interaction: Interaction, coin: str = "bitcoin"):
             await interaction.response.defer()
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd&include_24hr_change=true"
             try:
                 async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                    if resp.status != 200:
+                        return await interaction.followup.send("❌ API Error")
                     data = await resp.json()
                     if coin not in data: 
                         return await interaction.followup.send("❌ Coin not found")
@@ -574,10 +672,18 @@ class GodBot(commands.Bot):
                     color = Colors.SUCCESS if change >= 0 else Colors.ERROR
                     embed = EmbedFactory.create(f"💰 {coin.title()}", f"Price: ${price:,.2f}\n24h Change: {change:.2f}%", color)
                     await interaction.followup.send(embed=embed)
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Request timed out")
+            except json.JSONDecodeError:
+                await interaction.followup.send("❌ Invalid response from API")
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+                logger.error(f"Crypto command error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
         @self.tree.command(name="github", description="Get repo info")
+        @app_commands.cooldowns.cooldown(1, 10, key=lambda i: i.user.id)
         async def github_cmd(interaction: Interaction, owner: str, repo: str):
             await interaction.response.defer()
             url = f"https://api.github.com/repos/{owner}/{repo}"
@@ -586,12 +692,30 @@ class GodBot(commands.Bot):
                     if resp.status != 200: 
                         return await interaction.followup.send("❌ Repo not found")
                     d = await resp.json()
-                    fields = {"⭐ Stars": d['stargazers_count'], "🍴 Forks": d['forks_count'], "🐛 Issues": d['open_issues_count']}
-                    await interaction.followup.send(embed=EmbedFactory.create(f"GitHub: {d['full_name']}", d['description'], Colors.GITHUB, fields))
+                    fields = {
+                        "⭐ Stars": d['stargazers_count'], 
+                        "🍴 Forks": d['forks_count'], 
+                        "🐛 Issues": d['open_issues_count']
+                    }
+                    embed = EmbedFactory.create(
+                        f"GitHub: {d['full_name']}", 
+                        d.get('description', 'No description')[:Limits.MAX_EMBED_DESC], 
+                        Colors.GITHUB, 
+                        fields
+                    )
+                    await interaction.followup.send(embed=embed)
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Request timed out")
+            except json.JSONDecodeError:
+                await interaction.followup.send("❌ Invalid response from API")
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+                logger.error(f"GitHub command error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
         @self.tree.command(name="nasa", description="NASA Picture of the Day")
+        @app_commands.cooldowns.cooldown(1, 10, key=lambda i: i.user.id)
         async def nasa_cmd(interaction: Interaction):
             await interaction.response.defer()
             url = f"https://api.nasa.gov/planetary/apod?api_key={self.config.nasa_api_key}"
@@ -600,10 +724,22 @@ class GodBot(commands.Bot):
                     if resp.status != 200: 
                         return await interaction.followup.send("❌ NASA API Error")
                     d = await resp.json()
-                    embed = EmbedFactory.create(f"🌌 {d.get('title')}", d.get('explanation', '')[:1000] + "...", Colors.NASA, image=d.get('url'))
+                    embed = EmbedFactory.create(
+                        f"🌌 {d.get('title', 'NASA Picture')}", 
+                        d.get('explanation', '')[:Limits.MAX_EMBED_DESC], 
+                        Colors.NASA, 
+                        image=d.get('url')
+                    )
                     await interaction.followup.send(embed=embed)
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Request timed out")
+            except json.JSONDecodeError:
+                await interaction.followup.send("❌ Invalid response from API")
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+                logger.error(f"NASA command error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
         # --- FUN COMMANDS ---
         @self.tree.command(name="8ball", description="Ask the Magic 8-Ball")
@@ -613,20 +749,29 @@ class GodBot(commands.Bot):
             await interaction.response.send_message(embed=embed)
 
         @self.tree.command(name="trivia", description="Get a trivia question")
+        @app_commands.cooldowns.cooldown(1, 5, key=lambda i: i.user.id)
         async def trivia_cmd(interaction: Interaction):
             await interaction.response.defer()
             try:
-                async with self.session.get("https://opentdb.com/api.php?amount=1&type=boolean", timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)) as resp:
+                async with self.session.get(
+                    "https://opentdb.com/api.php?amount=1&type=boolean", 
+                    timeout=aiohttp.ClientTimeout(total=Limits.API_TIMEOUT)
+                ) as resp:
+                    if resp.status != 200:
+                        return await interaction.followup.send("❌ Trivia API Error")
                     d = await resp.json()
+                    if not d.get('results'):
+                        return await interaction.followup.send("❌ No trivia available")
+                    
                     q = d['results'][0]
-                    question = html.unescape(q['question'])
+                    question_text = html.unescape(q['question'])
                     ans = q['correct_answer']
                     
                     view = View()
                     
                     async def cb(intr: Interaction):
                         if intr.user.id != interaction.user.id: 
-                            return
+                            return await intr.response.send_message("❌ You can't use this!", ephemeral=True)
                         btn_lbl = intr.data['custom_id']
                         msg = "✅ Correct!" if btn_lbl == ans else f"❌ Wrong! It was {ans}."
                         await intr.response.send_message(msg, ephemeral=True)
@@ -636,32 +781,53 @@ class GodBot(commands.Bot):
                     b1.callback = b2.callback = cb
                     view.add_item(b1).add_item(b2)
                     
-                    await interaction.followup.send(embed=EmbedFactory.create("❓ Trivia", question, Colors.TRIVIA), view=view)
+                    await interaction.followup.send(
+                        embed=EmbedFactory.create("❓ Trivia", question_text, Colors.TRIVIA), 
+                        view=view
+                    )
+            except asyncio.TimeoutError:
+                await interaction.followup.send("❌ Request timed out")
+            except json.JSONDecodeError:
+                await interaction.followup.send("❌ Invalid response from API")
+            except app_commands.CommandOnCooldown as e:
+                await interaction.followup.send(embed=EmbedFactory.error(f"⏳ Command on cooldown. Try again in {e.retry_after:.1f}s"), ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+                logger.error(f"Trivia command error: {e}")
+                await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
         # --- ADMIN ---
         @self.tree.command(name="stats", description="Bot Statistics")
         async def stats_cmd(interaction: Interaction):
-            mem = psutil.virtual_memory()
-            fields = {
-                "⏰ Uptime": self.monitor.uptime,
-                "💻 CPU": f"{psutil.cpu_percent()}%",
-                "🧠 RAM": f"{mem.percent}%",
-                "🐍 Python": platform.python_version()
-            }
-            await interaction.response.send_message(embed=EmbedFactory.create("📊 System Stats", fields=fields))
+            try:
+                mem = psutil.virtual_memory()
+                fields = {
+                    "⏰ Uptime": self.monitor.uptime,
+                    "💻 CPU": f"{psutil.cpu_percent()}%",
+                    "🧠 RAM": f"{mem.percent}%",
+                    "🐍 Python": platform.python_version(),
+                    "🎮 Servers": len(self.guilds)
+                }
+                await interaction.response.send_message(embed=EmbedFactory.create("📊 System Stats", fields=fields, color=Colors.INFO))
+            except Exception as e:
+                logger.error(f"Stats command error: {e}")
+                await interaction.response.send_message(embed=EmbedFactory.error(f"Error: {str(e)[:100]}"))
 
         @self.tree.command(name="help", description="Show all commands")
         async def help_cmd(interaction: Interaction):
             desc = """
-            **🤖 AI:** `/ai`, `/image`
-            **🌐 API:** `/weather`, `/crypto`, `/github`, `/nasa`
-            **🔧 Utility:** `/ping`, `/userinfo`, `/serverinfo`, `/poll`, `/qrcode`
-            **🎮 Fun:** `/8ball`, `/trivia`
-            **🛡️ Mod:** Auto-moderation is active.
+**🤖 AI:** `/ai` (Gemini/Watson), `/image` (Pollinations)
+
+**🌐 API:** `/weather` (OpenWeather), `/crypto` (CoinGecko), `/github` (Repos), `/nasa` (APOD)
+
+**🔧 Utility:** `/ping`, `/userinfo`, `/serverinfo`, `/poll`, `/qrcode`, `/stats`
+
+**🎮 Fun:** `/8ball`, `/trivia`
+
+**🛡️ Mod:** Auto-moderation active with configurable levels
             """
-            await interaction.response.send_message(embed=EmbedFactory.create("GodBot v10 Help", desc))
+            await interaction.response.send_message(
+                embed=EmbedFactory.create(f"GodBot v{self.VERSION} Help", desc, Colors.PRIMARY)
+            )
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ENTRY POINT
@@ -669,21 +835,33 @@ class GodBot(commands.Bot):
 
 async def main():
     print(f"\n🚀 STARTING GODBOT v{GodBot.VERSION}")
+    print("━" * 70)
     
     if not config.is_configured():
         print("❌ ERROR: Discord Token not configured!")
         print(f"   Please set DISCORD_TOKEN in your .env file or environment variables.")
         print(f"   Example: DISCORD_TOKEN=your_token_here")
+        print("━" * 70)
         return
+
+    print(f"✅ Configuration loaded")
+    print(f"   • Moderation: {config.moderation_level.display_name}")
+    print(f"   • Gemini: {'✅' if config.gemini_api_key else '❌'}")
+    print(f"   • Watson: {'✅' if config.watson_api_key else '❌'}")
+    print("━" * 70)
 
     bot = GodBot()
     try:
         async with bot:
             await bot.start(config.discord_token)
     except KeyboardInterrupt:
-        print("\n👋 Shutting down...")
+        print("\n👋 Shutting down gracefully...")
     except Exception as e:
         print(f"\n❌ Fatal Error: {e}")
+        logger.exception("Fatal error occurred")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Interrupted by user")
