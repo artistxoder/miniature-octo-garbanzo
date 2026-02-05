@@ -344,7 +344,11 @@ class AIManager:
         self.watson = None
         self.cache = {}
     
-    async def initialize(self):
+  async def close(self):
+        # Only try to close the session if it was actually created
+        if hasattr(self, 'session') and self.session is not None:
+            await self.session.close()
+        await super().close()
         # Gemini Init
         if GEMINI_AVAILABLE and self.config.gemini_api_key:
             try:
